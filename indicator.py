@@ -130,9 +130,25 @@ class Bubble(QWidget):
         self._hover_owner = None
 
     def show_for(self, dot, state, label):
+        """Open / re-target the bubble. Resets the editor to the saved label
+        — only call this on initial display (e.g. hover-enter), NOT on the
+        periodic refresh, or you'll clobber what the user is typing."""
         self._cwd = state.get("cwd", "")
         self._hover_owner = dot
 
+        self.edit_label.blockSignals(True)
+        self.edit_label.setText(label or "")
+        self.edit_label.blockSignals(False)
+
+        self.refresh_meta(state, label)
+        self._position_near(dot)
+        self.show()
+        self.raise_()
+
+    def refresh_meta(self, state, label):
+        """Update the read-only header text (title / cwd / status+duration).
+        Does NOT touch the editor — safe to call while the user is typing,
+        including while an IME is composing characters."""
         sid = state.get("session_id", "?")[:8]
         title = label or f"session {sid}"
         self.lbl_title.setText(title)
@@ -142,11 +158,7 @@ class Bubble(QWidget):
         status_zh = "等你输入" if state.get("status") == "waiting" else "正在做"
         self.lbl_state.setText(f"{status_zh} · {_fmt_dur(secs)} · {sid}")
 
-        self.edit_label.blockSignals(True)
-        self.edit_label.setText(label or "")
-        self.edit_label.blockSignals(False)
-
-        # Dot is now a child widget — convert its rect to screen coords.
+    def _position_near(self, dot):
         top_left = dot.mapToGlobal(QPoint(0, 0))
         dot_rect = QRect(top_left, dot.size())
 
@@ -158,8 +170,6 @@ class Bubble(QWidget):
         if y + self.height() > sgeo.bottom():
             y = dot_rect.top() - self.height() - 8
         self.move(x, y)
-        self.show()
-        self.raise_()
 
     def schedule_hide(self):
         self._hide_timer.start(280)
@@ -575,7 +585,9 @@ class App(QApplication):
     def _tick(self):
         if self.bubble.isVisible() and self.bubble._hover_owner in self.dots.values():
             dot = self.bubble._hover_owner
-            self.bubble.show_for(dot, dot.state, self._label_for(dot.state.get("cwd", "")))
+            # Refresh ONLY the read-only meta line (duration ticks every
+            # second) — don't reset the editor or we'd kill in-progress input.
+            self.bubble.refresh_meta(dot.state, self._label_for(dot.state.get("cwd", "")))
 
     # ----- bubble plumbing -----
 
