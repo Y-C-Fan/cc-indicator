@@ -62,10 +62,15 @@ DEFAULT_CONFIG = {
     "panel_pos": None,   # [x, y] absolute screen coords, or None = auto top-right
     "labels": {},        # cwd -> user label
     "autostart": False,
-    # Sessions whose "working" state hasn't been refreshed by a hook event
-    # in this many seconds are surfaced as waiting (best-guess green) rather
-    # than staying yellow forever. Bumped above any realistic Task-agent
-    # run; the user can shrink it in config.json if they have shorter work.
+    # When we can locate the session's transcript file, mtime is the ground
+    # truth: if it was written in the last N seconds, Claude is writing
+    # tokens → working. Outside this window we assume Claude is idle. Set
+    # this longer if you run very long tool calls between token writes
+    # (e.g. Task subagent runs whose intermediate output goes to a
+    # different transcript).
+    "transcript_active_sec": 8,
+    # Fallback for when we CAN'T locate a transcript — trust hook state
+    # but only up to this long without any hook event.
     "stale_threshold_sec": 1800,
 }
 
@@ -605,18 +610,21 @@ class App(QApplication):
                 self.transcripts.pop(sid, None)
                 continue
 
-            # If the transcript has been touched very recently, Claude is
-            # actively generating regardless of what the (possibly stale)
-            # hook state claims — surface as working.
-            if tmtime > 0 and (time.time() - tmtime) < 30:
-                state["status"] = "working"
-
-            # Staleness fallback for the opposite direction: claim is
-            # working but nothing — neither hook nor transcript — has moved
-            # in a long time. Probably a missed Stop hook; show as waiting.
-            stale = self.cfg.get("stale_threshold_sec", 1800)
-            if state.get("status") == "working" and age > stale:
-                state["status"] = "waiting"
+            # If we found a transcript, its mtime is authoritative — Claude
+            # writes to it on every token batch, hook events can drop. We
+            # ignore the stale hook-reported status in this branch.
+            if tfile is not None:
+                active_win = self.cfg.get("transcript_active_sec", 8)
+                if tmtime > 0 and (time.time() - tmtime) < active_win:
+                    state["status"] = "working"
+                else:
+                    state["status"] = "waiting"
+            else:
+                # No transcript — trust hook state, with a long stale fallback
+                # in case Stop was dropped and the dot would otherwise stick.
+                stale = self.cfg.get("stale_threshold_sec", 1800)
+                if state.get("status") == "working" and age > stale:
+                    state["status"] = "waiting"
 
             if sid not in self.dots:
                 dot = Dot(sid)
