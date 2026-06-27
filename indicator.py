@@ -553,6 +553,15 @@ class App(QApplication):
                 except Exception: pass
                 continue
 
+            # Staleness fallback: Claude Code occasionally fails to fire the
+            # Stop hook (observed in the wild on sessions with non-ASCII cwd
+            # or after certain tool-use patterns). Without this, the dot
+            # would stay yellow forever even though Claude has long since
+            # gone idle. If we're in working state but no hook event has
+            # touched the file in a while, surface it as waiting.
+            if state.get("status") == "working" and age > 60:
+                state["status"] = "waiting"
+
             if sid not in self.dots:
                 dot = Dot(sid)
                 slot = DotSlot(dot, self.panel)
