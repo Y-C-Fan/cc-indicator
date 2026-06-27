@@ -51,6 +51,48 @@ def find_transcript(session_id):
         pass
     return None
 
+
+def transcript_status(transcript_file):
+    """Inspect the tail of the transcript JSONL and infer the session's
+    state from the most recent message's stop_reason:
+
+      - latest line is an assistant message with stop_reason == "end_turn"
+        → Claude finished its turn → waiting
+      - latest line is an assistant message with any other stop_reason
+        (tool_use, max_tokens, null) → Claude is mid-turn → working
+      - latest line is a user message (new prompt OR a tool_result coming
+        back) → Claude is about to / actively responding → working
+
+    Returns "working" / "waiting" / None (couldn't tell, caller should
+    fall back). Reads only the last ~16KB so it's cheap to call every tick.
+    """
+    try:
+        with transcript_file.open("rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            seek_back = min(16384, size)
+            f.seek(size - seek_back, 0)
+            chunk = f.read()
+        text = chunk.decode("utf-8", errors="replace")
+        lines = [ln for ln in text.split("\n") if ln.strip()]
+        for ln in reversed(lines):
+            try:
+                obj = json.loads(ln)
+            except Exception:
+                continue  # likely a truncated leading line from our seek-back
+            t = obj.get("type")
+            msg = obj.get("message") or {}
+            if t == "user":
+                return "working"
+            if t == "assistant":
+                if msg.get("stop_reason") == "end_turn":
+                    return "waiting"
+                return "working"
+            # Other entry types (summary, system) — keep scanning back.
+        return None
+    except Exception:
+        return None
+
 DOT_SIZE = 22
 DOT_GAP = 6
 PANEL_PAD_H = 12
@@ -62,15 +104,9 @@ DEFAULT_CONFIG = {
     "panel_pos": None,   # [x, y] absolute screen coords, or None = auto top-right
     "labels": {},        # cwd -> user label
     "autostart": False,
-    # When we can locate the session's transcript file, mtime is the ground
-    # truth: if it was written in the last N seconds, Claude is writing
-    # tokens → working. Outside this window we assume Claude is idle. Set
-    # this longer if you run very long tool calls between token writes
-    # (e.g. Task subagent runs whose intermediate output goes to a
-    # different transcript).
-    "transcript_active_sec": 8,
-    # Fallback for when we CAN'T locate a transcript — trust hook state
-    # but only up to this long without any hook event.
+    # Fallback for sessions whose transcript file we can't locate. Hook
+    # state is trusted up to this many seconds without an event — beyond
+    # that, working flips to waiting.
     "stale_threshold_sec": 1800,
 }
 
@@ -610,18 +646,16 @@ class App(QApplication):
                 self.transcripts.pop(sid, None)
                 continue
 
-            # If we found a transcript, its mtime is authoritative — Claude
-            # writes to it on every token batch, hook events can drop. We
-            # ignore the stale hook-reported status in this branch.
+            # If we found a transcript, parse the last entry's stop_reason
+            # for an authoritative state read — no magic timeouts.
+            inferred = None
             if tfile is not None:
-                active_win = self.cfg.get("transcript_active_sec", 8)
-                if tmtime > 0 and (time.time() - tmtime) < active_win:
-                    state["status"] = "working"
-                else:
-                    state["status"] = "waiting"
+                inferred = transcript_status(tfile)
+            if inferred is not None:
+                state["status"] = inferred
             else:
-                # No transcript — trust hook state, with a long stale fallback
-                # in case Stop was dropped and the dot would otherwise stick.
+                # No transcript or unparseable — trust hook state, with a
+                # long stale fallback so a missed Stop doesn't pin it yellow.
                 stale = self.cfg.get("stale_threshold_sec", 1800)
                 if state.get("status") == "working" and age > stale:
                     state["status"] = "waiting"
