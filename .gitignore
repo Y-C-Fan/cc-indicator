@@ -1,0 +1,18 @@
+# Dependencies (installed via install.bat into a local venv)
+venv/
+__pycache__/
+*.pyc
+
+# Runtime state — recreated by hooks at runtime
+state/
+*.tmp
+
+# User-local data
+config.json
+cc_hook.log
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
