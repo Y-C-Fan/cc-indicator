@@ -31,6 +31,25 @@ from PySide6.QtWidgets import (
 ROOT = Path(__file__).parent
 STATE_DIR = ROOT / "state"
 CONFIG_FILE = ROOT / "config.json"
+PROJECTS_DIR = Path(os.environ.get("USERPROFILE", str(Path.home()))) / ".claude" / "projects"
+
+
+def find_transcript(session_id):
+    """Locate ~/.claude/projects/*/<sid>.jsonl by scanning. Used when the
+    state file doesn't include a transcript_path (older format) or that
+    path no longer exists. Brute force but cheap — projects dir holds at
+    most a few dozen subdirectories."""
+    if not PROJECTS_DIR.exists():
+        return None
+    try:
+        for proj in PROJECTS_DIR.iterdir():
+            if proj.is_dir():
+                candidate = proj / f"{session_id}.jsonl"
+                if candidate.exists():
+                    return candidate
+    except Exception:
+        pass
+    return None
 
 DOT_SIZE = 22
 DOT_GAP = 6
@@ -446,6 +465,7 @@ class App(QApplication):
         self.cfg = load_config()
         self.dots = {}    # session_id -> Dot
         self.slots = {}   # session_id -> DotSlot
+        self.transcripts = {}  # session_id -> resolved Path | None (cached)
 
         self.panel = PanelFrame(self)
         self.bubble = Bubble()
@@ -552,16 +572,48 @@ class App(QApplication):
             sid = state.get("session_id") or f.stem
             seen.add(sid)
 
-            age = time.time() - state.get("updated", 0)
+            # Resolve & cache the session's transcript file. Prefer the path
+            # the hook stashed; fall back to scanning the projects dir.
+            tfile = self.transcripts.get(sid)
+            if tfile is None or not tfile.exists():
+                hint = state.get("transcript_path") or ""
+                if hint:
+                    p = Path(hint)
+                    if p.exists():
+                        tfile = p
+                if tfile is None or not tfile.exists():
+                    tfile = find_transcript(sid)
+                self.transcripts[sid] = tfile
+
+            tmtime = 0.0
+            if tfile:
+                try:
+                    tmtime = tfile.stat().st_mtime
+                except Exception:
+                    pass
+
+            # Effective last-active = newer of hook-reported update or
+            # transcript mtime. This way the indicator stays correct even
+            # if Claude Code drops hook events for this session — the
+            # transcript file keeps ticking as long as Claude writes tokens.
+            last_active = max(state.get("updated", 0), tmtime)
+
+            age = time.time() - last_active
             if age > 3600:
                 try: f.unlink()
                 except Exception: pass
+                self.transcripts.pop(sid, None)
                 continue
 
-            # Staleness fallback: Claude Code occasionally fails to fire the
-            # Stop hook. Without this the dot stays yellow forever. SubagentStop
-            # also heartbeats the file (without flipping status) so a multi-
-            # minute Task agent run won't accidentally trip this.
+            # If the transcript has been touched very recently, Claude is
+            # actively generating regardless of what the (possibly stale)
+            # hook state claims — surface as working.
+            if tmtime > 0 and (time.time() - tmtime) < 30:
+                state["status"] = "working"
+
+            # Staleness fallback for the opposite direction: claim is
+            # working but nothing — neither hook nor transcript — has moved
+            # in a long time. Probably a missed Stop hook; show as waiting.
             stale = self.cfg.get("stale_threshold_sec", 1800)
             if state.get("status") == "working" and age > stale:
                 state["status"] = "waiting"
@@ -586,6 +638,7 @@ class App(QApplication):
                 self.slots[sid].deleteLater()
                 del self.dots[sid]
                 del self.slots[sid]
+                self.transcripts.pop(sid, None)
 
         if self.dots:
             self._place_panel()

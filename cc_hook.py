@@ -91,6 +91,11 @@ def main():
             "updated": now,
             "started": started,
             "pid": os.getppid(),
+            # Stash transcript path so the indicator can read its mtime as a
+            # hook-independent activity signal (Claude appends a JSONL line
+            # per token batch, so the file's mtime tracks real activity even
+            # if Claude Code is dropping hook events for this session).
+            "transcript_path": payload.get("transcript_path") or "",
         }, ensure_ascii=False)
 
         # Use an explicit open()/write()/close() with a flush so we can be
