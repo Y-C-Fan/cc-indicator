@@ -43,6 +43,11 @@ DEFAULT_CONFIG = {
     "panel_pos": None,   # [x, y] absolute screen coords, or None = auto top-right
     "labels": {},        # cwd -> user label
     "autostart": False,
+    # Sessions whose "working" state hasn't been refreshed by a hook event
+    # in this many seconds are surfaced as waiting (best-guess green) rather
+    # than staying yellow forever. Bumped above any realistic Task-agent
+    # run; the user can shrink it in config.json if they have shorter work.
+    "stale_threshold_sec": 1800,
 }
 
 
@@ -554,12 +559,11 @@ class App(QApplication):
                 continue
 
             # Staleness fallback: Claude Code occasionally fails to fire the
-            # Stop hook (observed in the wild on sessions with non-ASCII cwd
-            # or after certain tool-use patterns). Without this, the dot
-            # would stay yellow forever even though Claude has long since
-            # gone idle. If we're in working state but no hook event has
-            # touched the file in a while, surface it as waiting.
-            if state.get("status") == "working" and age > 60:
+            # Stop hook. Without this the dot stays yellow forever. SubagentStop
+            # also heartbeats the file (without flipping status) so a multi-
+            # minute Task agent run won't accidentally trip this.
+            stale = self.cfg.get("stale_threshold_sec", 1800)
+            if state.get("status") == "working" and age > stale:
                 state["status"] = "waiting"
 
             if sid not in self.dots:

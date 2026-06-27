@@ -19,7 +19,11 @@ EVENT_TO_STATUS = {
     "SessionStart":     "waiting",
     "UserPromptSubmit": "working",
     "Stop":             "waiting",
-    "SubagentStop":     "waiting",
+    # SubagentStop fires when a Task-spawned subagent finishes. Main is
+    # still actively processing the subagent's output, so it stays working
+    # — but the event lets us heartbeat the timestamp so the staleness
+    # fallback doesn't kick in during long Task runs.
+    "SubagentStop":     "working",
     "Notification":     "waiting",
     "SessionEnd":       "end",
 }
