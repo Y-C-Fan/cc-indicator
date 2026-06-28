@@ -35,6 +35,8 @@ cc-indicator.bat
 
 启动一个无窗口的 `pythonw` 进程，托盘里出现绿圆点图标。
 
+想从**开始菜单**启动（搜 / 磁贴）：双击 `add-to-start-menu.bat` 注册一次，之后 `Win` 键搜 `cc-indicator` 就能找到，搜到后右键 → **「固定到"开始"屏幕」** 让它出现在磁贴里。
+
 新开一个 Claude Code 会话 → 面板上自动冒出一个圆点。
 
 要关掉：托盘右键 → 退出，或者跑 `stop.bat`。
