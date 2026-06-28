@@ -52,6 +52,56 @@ def find_transcript(session_id):
     return None
 
 
+def transcript_cwd(transcript_file):
+    """Pull the cwd out of the JSONL by scanning the first ~50 entries for
+    any line that has a `cwd` field. Pre-message metadata lines don't carry
+    it, so we have to skip past them."""
+    try:
+        with transcript_file.open("r", encoding="utf-8", errors="replace") as f:
+            for i, line in enumerate(f):
+                if i > 50:
+                    break
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except Exception:
+                    continue
+                cwd = obj.get("cwd")
+                if cwd:
+                    return cwd
+    except Exception:
+        pass
+    return ""
+
+
+def discover_sessions(cutoff_sec=3600):
+    """Find all session jsonl transcripts whose mtime is within cutoff_sec.
+    Returns list of (session_id, transcript_path). Independent of any hook
+    state — the indicator stays correct even if hooks never fire."""
+    out = []
+    if not PROJECTS_DIR.exists():
+        return out
+    now = time.time()
+    try:
+        for proj in PROJECTS_DIR.iterdir():
+            if not proj.is_dir():
+                continue
+            try:
+                for jsonl in proj.glob("*.jsonl"):
+                    try:
+                        if now - jsonl.stat().st_mtime < cutoff_sec:
+                            out.append((jsonl.stem, jsonl))
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return out
+
+
 def transcript_status(transcript_file):
     """Inspect the tail of the transcript JSONL and infer the session's
     state from the most recent message's stop_reason:
@@ -506,7 +556,9 @@ class App(QApplication):
         self.cfg = load_config()
         self.dots = {}    # session_id -> Dot
         self.slots = {}   # session_id -> DotSlot
-        self.transcripts = {}  # session_id -> resolved Path | None (cached)
+        self.transcripts = {}     # session_id -> resolved Path | None (cached)
+        self._cwd_cache = {}      # session_id -> cwd extracted from transcript
+        self._started_cache = {}  # session_id -> first-seen timestamp
 
         self.panel = PanelFrame(self)
         self.bubble = Bubble()
@@ -597,68 +649,41 @@ class App(QApplication):
     # ----- state polling -----
 
     def _refresh(self):
+        """Discover sessions directly from ~/.claude/projects/ jsonl files
+        and infer state from their last entry. We don't read state/*.json
+        anymore — those rely on hooks firing reliably, which Claude Code
+        sometimes silently stops doing for a session. Transcripts are
+        authoritative because Claude writes them itself."""
         seen = set()
-        for f in STATE_DIR.glob("*.json"):
-            try:
-                state = json.loads(f.read_text(encoding="utf-8"))
-            except Exception:
-                # Empty or malformed file. If it's old enough to not be a
-                # mid-write race, drop it so it stops cluttering the dir.
-                try:
-                    if time.time() - f.stat().st_mtime > 30:
-                        f.unlink()
-                except Exception:
-                    pass
-                continue
-            sid = state.get("session_id") or f.stem
+        for sid, tfile in discover_sessions(cutoff_sec=3600):
             seen.add(sid)
 
-            # Resolve & cache the session's transcript file. Prefer the path
-            # the hook stashed; fall back to scanning the projects dir.
-            tfile = self.transcripts.get(sid)
-            if tfile is None or not tfile.exists():
-                hint = state.get("transcript_path") or ""
-                if hint:
-                    p = Path(hint)
-                    if p.exists():
-                        tfile = p
-                if tfile is None or not tfile.exists():
-                    tfile = find_transcript(sid)
-                self.transcripts[sid] = tfile
+            # Determine status from the transcript's last entry.
+            status = transcript_status(tfile) or "waiting"
 
-            tmtime = 0.0
-            if tfile:
-                try:
-                    tmtime = tfile.stat().st_mtime
-                except Exception:
-                    pass
+            # Cache cwd per session (transcript first cwd line never changes).
+            cwd = self._cwd_cache.get(sid)
+            if cwd is None:
+                cwd = transcript_cwd(tfile) or tfile.parent.name
+                self._cwd_cache[sid] = cwd
 
-            # Effective last-active = newer of hook-reported update or
-            # transcript mtime. This way the indicator stays correct even
-            # if Claude Code drops hook events for this session — the
-            # transcript file keeps ticking as long as Claude writes tokens.
-            last_active = max(state.get("updated", 0), tmtime)
-
-            age = time.time() - last_active
-            if age > 3600:
-                try: f.unlink()
-                except Exception: pass
-                self.transcripts.pop(sid, None)
-                continue
-
-            # If we found a transcript, parse the last entry's stop_reason
-            # for an authoritative state read — no magic timeouts.
-            inferred = None
-            if tfile is not None:
-                inferred = transcript_status(tfile)
-            if inferred is not None:
-                state["status"] = inferred
-            else:
-                # No transcript or unparseable — trust hook state, with a
-                # long stale fallback so a missed Stop doesn't pin it yellow.
-                stale = self.cfg.get("stale_threshold_sec", 1800)
-                if state.get("status") == "working" and age > stale:
-                    state["status"] = "waiting"
+            # Build a state object compatible with the rest of the UI.
+            try:
+                tmtime = tfile.stat().st_mtime
+            except Exception:
+                tmtime = time.time()
+            state = {
+                "session_id": sid,
+                "cwd": cwd,
+                "status": status,
+                "event": "(transcript)",
+                "updated": tmtime,
+                # `started` is best-effort here — we use the transcript's
+                # earliest mtime would require keeping more state; instead,
+                # initialise once per session-appearance and leave it.
+                "started": self._started_cache.setdefault(sid, tmtime),
+                "transcript_path": str(tfile),
+            }
 
             if sid not in self.dots:
                 dot = Dot(sid)
@@ -671,16 +696,17 @@ class App(QApplication):
                 self.panel.add_dot(slot)
 
             self.dots[sid].update_state(state)
-            self.slots[sid].set_label(self._label_for(state.get("cwd", "")))
+            self.slots[sid].set_label(self._label_for(cwd))
 
-        # Drop dots whose files disappeared.
+        # Drop dots whose transcripts went stale (no longer in discover).
         for sid in list(self.dots):
             if sid not in seen:
                 self.panel.remove_dot(self.slots[sid])
                 self.slots[sid].deleteLater()
                 del self.dots[sid]
                 del self.slots[sid]
-                self.transcripts.pop(sid, None)
+                self._cwd_cache.pop(sid, None)
+                self._started_cache.pop(sid, None)
 
         if self.dots:
             self._place_panel()
