@@ -30,7 +30,7 @@ install.bat
 ## 跑
 
 ```cmd
-start.bat
+cc-indicator.bat
 ```
 
 启动一个无窗口的 `pythonw` 进程，托盘里出现绿圆点图标。
@@ -87,7 +87,7 @@ cc-indicator/
 ├── indicator.py        # 悬浮窗主程序（PySide6 + 系统托盘）
 ├── install_hooks.py    # merge / 移除 hooks 配置到 ~/.claude/settings.json
 ├── install.bat         # 一键 venv + pip + hook 注册
-├── start.bat           # 启动悬浮窗（无控制台）
+├── cc-indicator.bat    # 启动悬浮窗（无控制台）
 ├── stop.bat            # taskkill pythonw（粗暴但有效）
 ├── state/              # 各会话状态文件（运行时由 cc_hook.py 维护，gitignored）
 ├── venv/               # 虚拟环境（gitignored）
@@ -98,7 +98,7 @@ cc-indicator/
 
 - **多屏**：只在主屏摆面板；副屏待加
 - **点圆点跳到对应终端**：还没接（要从 hook 拿 pid 链一路找终端窗口，比较脏）
-- **平台**：只在 Windows 11 上测过；macOS / Linux 没测，理论上 PySide6 部分能跑、`install.bat`/`start.bat` 要换 shell
+- **平台**：只在 Windows 11 上测过；macOS / Linux 没测，理论上 PySide6 部分能跑、`install.bat`/`cc-indicator.bat` 要换 shell
 
 ## 故障排查
 

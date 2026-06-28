@@ -809,7 +809,7 @@ def _set_autostart(enable):
         if lnk.exists():
             lnk.unlink()
         return
-    target = ROOT / "start.bat"
+    target = ROOT / "cc-indicator.bat"
     vbs = f'''
 Set s = CreateObject("WScript.Shell")
 Set lnk = s.CreateShortcut("{lnk}")

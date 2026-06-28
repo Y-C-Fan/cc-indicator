@@ -34,6 +34,6 @@ if errorlevel 1 (
 )
 
 echo.
-echo 装好了。运行 start.bat 启动悬浮窗（无黑窗口）。
+echo 装好了。运行 cc-indicator.bat 启动悬浮窗（无黑窗口）。
 echo （要卸 hooks: venv\Scripts\python.exe install_hooks.py --remove）
 pause
